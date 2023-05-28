@@ -1,5 +1,5 @@
 # ################################################################
-# Copyright (c) 2015-present, Yann Collet, Facebook, Inc.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
 # This source code is licensed under both the BSD-style license (found in the
@@ -12,6 +12,22 @@ project(libzstd C ASM)
 set(CMAKE_INCLUDE_CURRENT_DIR TRUE)
 option(ZSTD_BUILD_STATIC "BUILD STATIC LIBRARIES" ON)
 option(ZSTD_BUILD_SHARED "BUILD SHARED LIBRARIES" ON)
+option(ZSTD_BUILD_COMPRESSION "BUILD COMPRESSION MODULE" ON)
+option(ZSTD_BUILD_DECOMPRESSION "BUILD DECOMPRESSION MODUEL" ON)
+option(ZSTD_BUILD_DICTBUILDER "BUILD DICTBUILDER MODULE" ON)
+option(ZSTD_BUILD_DEPRECATED "BUILD DEPRECATED MODULE" OFF)
+
+set(ZSTDLIB_VISIBLE "" CACHE STRING "Visiblity for ZSTDLIB API")
+set(ZSTDERRORLIB_VISIBLE "" CACHE STRING "Visiblity for ZSTDERRORLIB_VISIBLE API")
+set(ZDICTLIB_VISIBLE "" CACHE STRING "Visiblity for ZDICTLIB_VISIBLE API")
+set(ZSTDLIB_STATIC_API "" CACHE STRING "Visiblity for ZSTDLIB_STATIC_API API")
+set(ZDICTLIB_STATIC_API "" CACHE STRING "Visiblity for ZDICTLIB_STATIC_API API")
+
+set_property(CACHE ZSTDLIB_VISIBLE PROPERTY STRINGS "" "hidden" "default" "protected" "internal")
+set_property(CACHE ZSTDERRORLIB_VISIBLE PROPERTY STRINGS "" "hidden" "default" "protected" "internal")
+set_property(CACHE ZDICTLIB_VISIBLE PROPERTY STRINGS "" "hidden" "default" "protected" "internal")
+set_property(CACHE ZSTDLIB_STATIC_API PROPERTY STRINGS "" "hidden" "default" "protected" "internal")
+set_property(CACHE ZDICTLIB_STATIC_API PROPERTY STRINGS "" "hidden" "default" "protected" "internal")
 
 if(NOT ZSTD_BUILD_SHARED AND NOT ZSTD_BUILD_STATIC)
     message(SEND_ERROR "You need to build at least one flavor of libzstd")
@@ -29,24 +45,32 @@ else ()
     file(GLOB DecompressSources ${LIBRARY_DIR}/decompress/*.c ${LIBRARY_DIR}/decompress/*.S)
 endif ()
 file(GLOB DictBuilderSources ${LIBRARY_DIR}/dictBuilder/*.c)
-
-set(Sources
-        ${CommonSources}
-        ${CompressSources}
-        ${DecompressSources}
-        ${DictBuilderSources})
+file(GLOB DeprecatedSources ${LIBRARY_DIR}/deprecated/*.c)
 
 file(GLOB CommonHeaders ${LIBRARY_DIR}/common/*.h)
 file(GLOB CompressHeaders ${LIBRARY_DIR}/compress/*.h)
 file(GLOB DecompressHeaders ${LIBRARY_DIR}/decompress/*.h)
 file(GLOB DictBuilderHeaders ${LIBRARY_DIR}/dictBuilder/*.h)
+file(GLOB DeprecatedHeaders ${LIBRARY_DIR}/deprecated/*.h)
 
-set(Headers
-        ${LIBRARY_DIR}/zstd.h
-        ${CommonHeaders}
-        ${CompressHeaders}
-        ${DecompressHeaders}
-        ${DictBuilderHeaders})
+set(Sources ${CommonSources})
+set(Headers ${LIBRARY_DIR}/zstd.h ${CommonHeaders})
+if (ZSTD_BUILD_COMPRESSION)
+    set(Sources ${Sources} ${CompressSources})
+    set(Headers ${Headers} ${CompressHeaders})
+endif()
+if (ZSTD_BUILD_DECOMPRESSION)
+    set(Sources ${Sources} ${DecompressSources})
+    set(Headers ${Headers} ${DecompressHeaders})
+endif()
+if (ZSTD_BUILD_DICTBUILDER)
+    set(Sources ${Sources} ${DictBuilderSources})
+    set(Headers ${Headers} ${DictBuilderHeaders})
+endif()
+if (ZSTD_BUILD_DEPRECATED)
+    set(Sources ${Sources} ${DeprecatedSources})
+    set(Headers ${Headers} ${DeprecatedHeaders})
+endif()
 
 if (ZSTD_LEGACY_SUPPORT)
     set(LIBRARY_LEGACY_DIR ${LIBRARY_DIR}/legacy)
@@ -77,6 +101,18 @@ if (MSVC)
     set(PlatformDependResources ${MSVC_RESOURCE_DIR}/libzstd-dll.rc)
 endif ()
 
+# Explicitly set the language to C for all files, including ASM files.
+# Our assembly expects to be compiled by a C compiler, and is only enabled for
+# __GNUC__ compatible compilers. Otherwise all the ASM code is disabled by
+# macros.
+set_source_files_properties(${Sources} PROPERTIES LANGUAGE C)
+
+macro (add_definition target var)
+    if (NOT ("${${var}}" STREQUAL ""))
+        set_property(TARGET ${target} APPEND PROPERTY COMPILE_DEFINITIONS "${var}=__attribute__((visibility(\"${${var}}\")))")
+    endif ()
+endmacro ()
+
 # Split project to static and shared libraries build
 set(library_targets)
 if (ZSTD_BUILD_SHARED)
@@ -87,7 +123,10 @@ if (ZSTD_BUILD_SHARED)
         if (UNIX)
             target_link_libraries(libzstd_shared ${THREADS_LIBS})
         endif ()
-    endif()
+    endif ()
+    add_definition(libzstd_shared ZSTDLIB_VISIBLE)
+    add_definition(libzstd_shared ZSTDERRORLIB_VISIBLE)
+    add_definition(libzstd_shared ZDICTLIB_VISIBLE)
 endif ()
 if (ZSTD_BUILD_STATIC)
     add_library(libzstd_static STATIC ${Sources} ${Headers})
@@ -98,6 +137,11 @@ if (ZSTD_BUILD_STATIC)
             target_link_libraries(libzstd_static ${THREADS_LIBS})
         endif ()
     endif ()
+    add_definition(libzstd_static ZSTDLIB_VISIBLE)
+    add_definition(libzstd_static ZSTDERRORLIB_VISIBLE)
+    add_definition(libzstd_static ZDICTLIB_VISIBLE)
+    add_definition(libzstd_static ZSTDLIB_STATIC_API)
+    add_definition(libzstd_static ZDICTLIB_STATIC_API)
 endif ()
 
 # Add specific compile definitions for MSVC project
@@ -135,30 +179,17 @@ if (ZSTD_BUILD_STATIC)
             OUTPUT_NAME ${STATIC_LIBRARY_BASE_NAME})
 endif ()
 
-if (UNIX OR MINGW)
-    # pkg-config
-    set(PREFIX "${CMAKE_INSTALL_PREFIX}")
-    set(EXEC_PREFIX "\${prefix}")
-    set(LIBDIR "${CMAKE_INSTALL_FULL_LIBDIR}")
-    set(INCLUDEDIR "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
-    set(VERSION "${zstd_VERSION}")
+# pkg-config
+include(JoinPaths) # can be replaced by cmake_path(APPEND) in CMake 3.20
+set(PREFIX "${CMAKE_INSTALL_PREFIX}")
+set(EXEC_PREFIX "\${prefix}")
+join_paths(LIBDIR "\${exec_prefix}" "${CMAKE_INSTALL_LIBDIR}")
+join_paths(INCLUDEDIR "\${prefix}" "${CMAKE_INSTALL_INCLUDEDIR}")
+set(LIBS_PRIVATE "${THREADS_LIBS}")
+set(VERSION "${zstd_VERSION}")
 
-    string(LENGTH "${PREFIX}" PREFIX_LENGTH)
-    string(SUBSTRING "${LIBDIR}" 0 ${PREFIX_LENGTH} LIBDIR_PREFIX)
-    string(SUBSTRING "${LIBDIR}" ${PREFIX_LENGTH} -1 LIBDIR_SUFFIX)
-    string(SUBSTRING "${INCLUDEDIR}" 0 ${PREFIX_LENGTH} INCLUDEDIR_PREFIX)
-    string(SUBSTRING "${INCLUDEDIR}" ${PREFIX_LENGTH} -1 INCLUDEDIR_SUFFIX)
-
-    if ("${INCLUDEDIR_PREFIX}" STREQUAL "${PREFIX}")
-        set(INCLUDEDIR "\${prefix}${INCLUDEDIR_SUFFIX}")
-    endif()
-    if ("${LIBDIR_PREFIX}" STREQUAL "${PREFIX}")
-        set(LIBDIR "\${exec_prefix}${LIBDIR_SUFFIX}")
-    endif()
-
-    configure_file("${LIBRARY_DIR}/libzstd.pc.in" "${CMAKE_CURRENT_BINARY_DIR}/libzstd.pc" @ONLY)
-    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libzstd.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
-endif ()
+configure_file("${LIBRARY_DIR}/libzstd.pc.in" "${CMAKE_CURRENT_BINARY_DIR}/libzstd.pc" @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/libzstd.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
 
 # install target
 install(FILES

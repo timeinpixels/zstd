@@ -119,6 +119,15 @@ The file structure is designed to make this selection manually achievable for an
   binary is achieved by using `HUF_FORCE_DECOMPRESS_X1` and
   `ZSTD_FORCE_DECOMPRESS_SEQUENCES_SHORT` (implied by `ZSTD_LIB_MINIFY`).
 
+  On the compressor side, Zstd's compression levels map to several internal
+  strategies. In environments where the higher compression levels aren't used,
+  it is possible to exclude all but the fastest strategy with
+  `ZSTD_LIB_EXCLUDE_COMPRESSORS_DFAST_AND_UP=1`. (Note that this will change
+  the behavior of the default compression level.) Or if you want to retain the
+  default compressor as well, you can set
+  `ZSTD_LIB_EXCLUDE_COMPRESSORS_GREEDY_AND_UP=1`, at the cost of an additional
+  ~20KB or so.
+
   For squeezing the last ounce of size out, you can also define
   `ZSTD_NO_INLINE`, which disables inlining, and `ZSTD_STRIP_ERROR_STRINGS`,
   which removes the error messages that are otherwise returned by
@@ -161,6 +170,13 @@ The file structure is designed to make this selection manually achievable for an
   `ZSTD_DCtx` decompression contexts,
   but might also result in a small decompression speed cost.
 
+- The C compiler macros `ZSTDLIB_VISIBLE`, `ZSTDERRORLIB_VISIBLE` and `ZDICTLIB_VISIBLE`
+  can be overridden to control the visibility of zstd's API. Additionally,
+  `ZSTDLIB_STATIC_API` and `ZDICTLIB_STATIC_API` can be overridden to control the visibility
+  of zstd's static API. Specifically, it can be set to `ZSTDLIB_HIDDEN` to hide the symbols
+  from the shared library. These macros default to `ZSTDLIB_VISIBILITY`,
+  `ZSTDERRORLIB_VSIBILITY`, and `ZDICTLIB_VISIBILITY` if unset, for backwards compatibility
+  with the old macro names.
 
 #### Windows : using MinGW+MSYS to create DLL
 

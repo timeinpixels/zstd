@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -34,13 +34,13 @@ typedef struct FIO_prefs_s {
 
     /* Algorithm preferences */
     FIO_compressionType_t compressionType;
-    U32 sparseFileSupport;   /* 0: no sparse allowed; 1: auto (file yes, stdout no); 2: force sparse */
+    int sparseFileSupport;   /* 0: no sparse allowed; 1: auto (file yes, stdout no); 2: force sparse */
     int dictIDFlag;
     int checksumFlag;
     int blockSize;
     int overlapLog;
-    U32 adaptiveMode;
-    U32 useRowMatchFinder;
+    int adaptiveMode;
+    int useRowMatchFinder;
     int rsyncable;
     int minAdaptLevel;
     int maxAdaptLevel;
@@ -56,9 +56,9 @@ typedef struct FIO_prefs_s {
     ZSTD_paramSwitch_e literalCompressionMode;
 
     /* IO preferences */
-    U32 removeSrcFile;
-    U32 overwrite;
-    U32 asyncIO;
+    int removeSrcFile;
+    int overwrite;
+    int asyncIO;
 
     /* Computation resources preferences */
     unsigned memLimit;
@@ -68,6 +68,19 @@ typedef struct FIO_prefs_s {
     int patchFromMode;
     int contentSize;
     int allowBlockDevices;
+    int passThrough;
+    ZSTD_paramSwitch_e mmapDict;
 } FIO_prefs_t;
+
+typedef enum {FIO_mallocDict, FIO_mmapDict} FIO_dictBufferType_t;
+
+typedef struct {
+    void* dictBuffer;
+    size_t dictBufferSize;
+    FIO_dictBufferType_t dictBufferType;
+#if defined(_MSC_VER) || defined(_WIN32)
+    HANDLE dictHandle;
+#endif
+} FIO_Dict_t;
 
 #endif /* FILEIO_TYPES_HEADER */

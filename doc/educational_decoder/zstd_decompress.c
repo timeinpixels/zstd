@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -1399,7 +1399,7 @@ size_t ZSTD_get_decompressed_size(const void *src, const size_t src_len) {
 /******* END OUTPUT SIZE COUNTING *********************************************/
 
 /******* DICTIONARY PARSING ***************************************************/
-dictionary_t* create_dictionary() {
+dictionary_t* create_dictionary(void) {
     dictionary_t* const dict = calloc(1, sizeof(dictionary_t));
     if (!dict) {
         BAD_ALLOC();
@@ -1890,7 +1890,7 @@ static size_t HUF_decompress_4stream(const HUF_dtable *const dtable,
 
 /// Initializes a Huffman table using canonical Huffman codes
 /// For more explanation on canonical Huffman codes see
-/// http://www.cs.uofs.edu/~mccloske/courses/cmps340/huff_canonical_dec2015.html
+/// https://www.cs.scranton.edu/~mccloske/courses/cmps340/huff_canonical_dec2015.html
 /// Codes within a level are allocated in symbol order (i.e. smaller symbols get
 /// earlier codes)
 static void HUF_init_dtable(HUF_dtable *const table, const u8 *const bits,

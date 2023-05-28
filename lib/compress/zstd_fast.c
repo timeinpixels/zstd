@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -11,8 +11,42 @@
 #include "zstd_compress_internal.h"  /* ZSTD_hashPtr, ZSTD_count, ZSTD_storeSeq */
 #include "zstd_fast.h"
 
+static void ZSTD_fillHashTableForCDict(ZSTD_matchState_t* ms,
+                        const void* const end,
+                        ZSTD_dictTableLoadMethod_e dtlm)
+{
+    const ZSTD_compressionParameters* const cParams = &ms->cParams;
+    U32* const hashTable = ms->hashTable;
+    U32  const hBits = cParams->hashLog + ZSTD_SHORT_CACHE_TAG_BITS;
+    U32  const mls = cParams->minMatch;
+    const BYTE* const base = ms->window.base;
+    const BYTE* ip = base + ms->nextToUpdate;
+    const BYTE* const iend = ((const BYTE*)end) - HASH_READ_SIZE;
+    const U32 fastHashFillStep = 3;
 
-void ZSTD_fillHashTable(ZSTD_matchState_t* ms,
+    /* Currently, we always use ZSTD_dtlm_full for filling CDict tables.
+     * Feel free to remove this assert if there's a good reason! */
+    assert(dtlm == ZSTD_dtlm_full);
+
+    /* Always insert every fastHashFillStep position into the hash table.
+     * Insert the other positions if their hash entry is empty.
+     */
+    for ( ; ip + fastHashFillStep < iend + 2; ip += fastHashFillStep) {
+        U32 const curr = (U32)(ip - base);
+        {   size_t const hashAndTag = ZSTD_hashPtr(ip, hBits, mls);
+            ZSTD_writeTaggedIndex(hashTable, hashAndTag, curr);   }
+
+        if (dtlm == ZSTD_dtlm_fast) continue;
+        /* Only load extra positions for ZSTD_dtlm_full */
+        {   U32 p;
+            for (p = 1; p < fastHashFillStep; ++p) {
+                size_t const hashAndTag = ZSTD_hashPtr(ip + p, hBits, mls);
+                if (hashTable[hashAndTag >> ZSTD_SHORT_CACHE_TAG_BITS] == 0) {  /* not yet filled */
+                    ZSTD_writeTaggedIndex(hashTable, hashAndTag, curr + p);
+                }   }   }   }
+}
+
+static void ZSTD_fillHashTableForCCtx(ZSTD_matchState_t* ms,
                         const void* const end,
                         ZSTD_dictTableLoadMethod_e dtlm)
 {
@@ -24,6 +58,10 @@ void ZSTD_fillHashTable(ZSTD_matchState_t* ms,
     const BYTE* ip = base + ms->nextToUpdate;
     const BYTE* const iend = ((const BYTE*)end) - HASH_READ_SIZE;
     const U32 fastHashFillStep = 3;
+
+    /* Currently, we always use ZSTD_dtlm_fast for filling CCtx tables.
+     * Feel free to remove this assert if there's a good reason! */
+    assert(dtlm == ZSTD_dtlm_fast);
 
     /* Always insert every fastHashFillStep position into the hash table.
      * Insert the other positions if their hash entry is empty.
@@ -40,6 +78,18 @@ void ZSTD_fillHashTable(ZSTD_matchState_t* ms,
                 if (hashTable[hash] == 0) {  /* not yet filled */
                     hashTable[hash] = curr + p;
     }   }   }   }
+}
+
+void ZSTD_fillHashTable(ZSTD_matchState_t* ms,
+                        const void* const end,
+                        ZSTD_dictTableLoadMethod_e dtlm,
+                        ZSTD_tableFillPurpose_e tfp)
+{
+    if (tfp == ZSTD_tfp_forCDict) {
+        ZSTD_fillHashTableForCDict(ms, end, dtlm);
+    } else {
+        ZSTD_fillHashTableForCCtx(ms, end, dtlm);
+    }
 }
 
 
@@ -117,7 +167,7 @@ ZSTD_compressBlock_fast_noDict_generic(
 
     U32 rep_offset1 = rep[0];
     U32 rep_offset2 = rep[1];
-    U32 offsetSaved = 0;
+    U32 offsetSaved1 = 0, offsetSaved2 = 0;
 
     size_t hash0; /* hash for ip0 */
     size_t hash1; /* hash for ip1 */
@@ -141,8 +191,8 @@ ZSTD_compressBlock_fast_noDict_generic(
     {   U32 const curr = (U32)(ip0 - base);
         U32 const windowLow = ZSTD_getLowestPrefixIndex(ms, curr, cParams->windowLog);
         U32 const maxRep = curr - windowLow;
-        if (rep_offset2 > maxRep) offsetSaved = rep_offset2, rep_offset2 = 0;
-        if (rep_offset1 > maxRep) offsetSaved = rep_offset1, rep_offset1 = 0;
+        if (rep_offset2 > maxRep) offsetSaved2 = rep_offset2, rep_offset2 = 0;
+        if (rep_offset1 > maxRep) offsetSaved1 = rep_offset1, rep_offset1 = 0;
     }
 
     /* start each op */
@@ -182,6 +232,12 @@ _start: /* Requires: ip0 */
             match0 -= mLength;
             offcode = REPCODE1_TO_OFFBASE;
             mLength += 4;
+
+            /* First write next hash table entry; we've already calculated it.
+             * This write is known to be safe because the ip1 is before the
+             * repcode (ip2). */
+            hashTable[hash1] = (U32)(ip1 - base);
+
             goto _match;
         }
 
@@ -195,6 +251,12 @@ _start: /* Requires: ip0 */
         /* check match at ip[0] */
         if (MEM_read32(ip0) == mval) {
             /* found a match! */
+
+            /* First write next hash table entry; we've already calculated it.
+             * This write is known to be safe because the ip1 == ip0 + 1, so
+             * we know we will resume searching after ip1 */
+            hashTable[hash1] = (U32)(ip1 - base);
+
             goto _offset;
         }
 
@@ -224,6 +286,21 @@ _start: /* Requires: ip0 */
         /* check match at ip[0] */
         if (MEM_read32(ip0) == mval) {
             /* found a match! */
+
+            /* first write next hash table entry; we've already calculated it */
+            if (step <= 4) {
+                /* We need to avoid writing an index into the hash table >= the
+                 * position at which we will pick up our searching after we've
+                 * taken this match.
+                 *
+                 * The minimum possible match has length 4, so the earliest ip0
+                 * can be after we take this match will be the current ip0 + 4.
+                 * ip1 is ip0 + step - 1. If ip1 is >= ip0 + 4, we can't safely
+                 * write this position.
+                 */
+                hashTable[hash1] = (U32)(ip1 - base);
+            }
+
             goto _offset;
         }
 
@@ -254,9 +331,24 @@ _cleanup:
      * However, it seems to be a meaningful performance hit to try to search
      * them. So let's not. */
 
+    /* When the repcodes are outside of the prefix, we set them to zero before the loop.
+     * When the offsets are still zero, we need to restore them after the block to have a correct
+     * repcode history. If only one offset was invalid, it is easy. The tricky case is when both
+     * offsets were invalid. We need to figure out which offset to refill with.
+     *     - If both offsets are zero they are in the same order.
+     *     - If both offsets are non-zero, we won't restore the offsets from `offsetSaved[12]`.
+     *     - If only one is zero, we need to decide which offset to restore.
+     *         - If rep_offset1 is non-zero, then rep_offset2 must be offsetSaved1.
+     *         - It is impossible for rep_offset2 to be non-zero.
+     *
+     * So if rep_offset1 started invalid (offsetSaved1 != 0) and became valid (rep_offset1 != 0), then
+     * set rep[0] = rep_offset1 and rep[1] = offsetSaved1.
+     */
+    offsetSaved2 = ((offsetSaved1 != 0) && (rep_offset1 != 0)) ? offsetSaved1 : offsetSaved2;
+
     /* save reps for next block */
-    rep[0] = rep_offset1 ? rep_offset1 : offsetSaved;
-    rep[1] = rep_offset2 ? rep_offset2 : offsetSaved;
+    rep[0] = rep_offset1 ? rep_offset1 : offsetSaved1;
+    rep[1] = rep_offset2 ? rep_offset2 : offsetSaved2;
 
     /* Return the last literals size */
     return (size_t)(iend - anchor);
@@ -286,11 +378,6 @@ _match: /* Requires: ip0, match0, offcode */
 
     ip0 += mLength;
     anchor = ip0;
-
-    /* write next hash table entry */
-    if (ip1 < ip0) {
-        hashTable[hash1] = (U32)(ip1 - base);
-    }
 
     /* Fill table and check for immediate repcode. */
     if (ip0 <= ilimit) {
@@ -388,7 +475,6 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
     const BYTE* const iend = istart + srcSize;
     const BYTE* const ilimit = iend - HASH_READ_SIZE;
     U32 offset_1=rep[0], offset_2=rep[1];
-    U32 offsetSaved = 0;
 
     const ZSTD_matchState_t* const dms = ms->dictMatchState;
     const ZSTD_compressionParameters* const dictCParams = &dms->cParams ;
@@ -399,7 +485,7 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
     const BYTE* const dictEnd      = dms->window.nextSrc;
     const U32 dictIndexDelta       = prefixStartIndex - (U32)(dictEnd - dictBase);
     const U32 dictAndPrefixLength  = (U32)(istart - prefixStart + dictEnd - dictStart);
-    const U32 dictHLog             = dictCParams->hashLog;
+    const U32 dictHBits            = dictCParams->hashLog + ZSTD_SHORT_CACHE_TAG_BITS;
 
     /* if a dictionary is still attached, it necessarily means that
      * it is within window size. So we just check it. */
@@ -414,6 +500,11 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
      * when translating a dict index into a local index */
     assert(prefixStartIndex >= (U32)(dictEnd - dictBase));
 
+    if (ms->prefetchCDictTables) {
+        size_t const hashTableBytes = (((size_t)1) << dictCParams->hashLog) * sizeof(U32);
+        PREFETCH_AREA(dictHashTable, hashTableBytes)
+    }
+
     /* init */
     DEBUGLOG(5, "ZSTD_compressBlock_fast_dictMatchState_generic");
     ip0 += (dictAndPrefixLength == 0);
@@ -427,8 +518,11 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
     while (ip1 <= ilimit) {   /* repcode check at (ip0 + 1) is safe because ip0 < ip1 */
         size_t mLength;
         size_t hash0 = ZSTD_hashPtr(ip0, hlog, mls);
-        const size_t dictHash0 = ZSTD_hashPtr(ip0, dictHLog, mls);
-        U32 dictMatchIndex = dictHashTable[dictHash0];
+
+        size_t const dictHashAndTag0 = ZSTD_hashPtr(ip0, dictHBits, mls);
+        U32 dictMatchIndexAndTag = dictHashTable[dictHashAndTag0 >> ZSTD_SHORT_CACHE_TAG_BITS];
+        int dictTagsMatch = ZSTD_comparePackedTags(dictMatchIndexAndTag, dictHashAndTag0);
+
         U32 matchIndex = hashTable[hash0];
         U32 curr = (U32)(ip0 - base);
         size_t step = stepSize;
@@ -443,7 +537,7 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
                                    dictBase + (repIndex - dictIndexDelta) :
                                    base + repIndex;
             const size_t hash1 = ZSTD_hashPtr(ip1, hlog, mls);
-            const size_t dictHash1 = ZSTD_hashPtr(ip1, dictHLog, mls);
+            size_t const dictHashAndTag1 = ZSTD_hashPtr(ip1, dictHBits, mls);
             hashTable[hash0] = curr;   /* update hash table */
 
             if (((U32) ((prefixStartIndex - 1) - repIndex) >=
@@ -454,26 +548,33 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
                 ip0++;
                 ZSTD_storeSeq(seqStore, (size_t) (ip0 - anchor), anchor, iend, REPCODE1_TO_OFFBASE, mLength);
                 break;
-            } else if (matchIndex <= prefixStartIndex) {
-                /* We only look for a dict match if the normal matchIndex is invalid */
+            }
+
+            if (dictTagsMatch) {
+                /* Found a possible dict match */
+                const U32 dictMatchIndex = dictMatchIndexAndTag >> ZSTD_SHORT_CACHE_TAG_BITS;
                 const BYTE* dictMatch = dictBase + dictMatchIndex;
                 if (dictMatchIndex > dictStartIndex &&
                     MEM_read32(dictMatch) == MEM_read32(ip0)) {
-                    /* found a dict match */
-                    U32 const offset = (U32) (curr - dictMatchIndex - dictIndexDelta);
-                    mLength = ZSTD_count_2segments(ip0 + 4, dictMatch + 4, iend, dictEnd, prefixStart) + 4;
-                    while (((ip0 > anchor) & (dictMatch > dictStart))
-                           && (ip0[-1] == dictMatch[-1])) {
-                        ip0--;
-                        dictMatch--;
-                        mLength++;
-                    } /* catch up */
-                    offset_2 = offset_1;
-                    offset_1 = offset;
-                    ZSTD_storeSeq(seqStore, (size_t) (ip0 - anchor), anchor, iend, OFFSET_TO_OFFBASE(offset), mLength);
-                    break;
+                    /* To replicate extDict parse behavior, we only use dict matches when the normal matchIndex is invalid */
+                    if (matchIndex <= prefixStartIndex) {
+                        U32 const offset = (U32) (curr - dictMatchIndex - dictIndexDelta);
+                        mLength = ZSTD_count_2segments(ip0 + 4, dictMatch + 4, iend, dictEnd, prefixStart) + 4;
+                        while (((ip0 > anchor) & (dictMatch > dictStart))
+                            && (ip0[-1] == dictMatch[-1])) {
+                            ip0--;
+                            dictMatch--;
+                            mLength++;
+                        } /* catch up */
+                        offset_2 = offset_1;
+                        offset_1 = offset;
+                        ZSTD_storeSeq(seqStore, (size_t) (ip0 - anchor), anchor, iend, OFFSET_TO_OFFBASE(offset), mLength);
+                        break;
+                    }
                 }
-            } else if (MEM_read32(match) == MEM_read32(ip0)) {
+            }
+
+            if (matchIndex > prefixStartIndex && MEM_read32(match) == MEM_read32(ip0)) {
                 /* found a regular match */
                 U32 const offset = (U32) (ip0 - match);
                 mLength = ZSTD_count(ip0 + 4, match + 4, iend) + 4;
@@ -490,7 +591,8 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
             }
 
             /* Prepare for next iteration */
-            dictMatchIndex = dictHashTable[dictHash1];
+            dictMatchIndexAndTag = dictHashTable[dictHashAndTag1 >> ZSTD_SHORT_CACHE_TAG_BITS];
+            dictTagsMatch = ZSTD_comparePackedTags(dictMatchIndexAndTag, dictHashAndTag1);
             matchIndex = hashTable[hash1];
 
             if (ip1 >= nextStep) {
@@ -545,8 +647,8 @@ size_t ZSTD_compressBlock_fast_dictMatchState_generic(
 
 _cleanup:
     /* save reps for next block */
-    rep[0] = offset_1 ? offset_1 : offsetSaved;
-    rep[1] = offset_2 ? offset_2 : offsetSaved;
+    rep[0] = offset_1;
+    rep[1] = offset_2;
 
     /* Return the last literals size */
     return (size_t)(iend - anchor);
@@ -603,6 +705,7 @@ static size_t ZSTD_compressBlock_fast_extDict_generic(
     const BYTE* const iend = istart + srcSize;
     const BYTE* const ilimit = iend - 8;
     U32 offset_1=rep[0], offset_2=rep[1];
+    U32 offsetSaved1 = 0, offsetSaved2 = 0;
 
     const BYTE* ip0 = istart;
     const BYTE* ip1;
@@ -635,8 +738,8 @@ static size_t ZSTD_compressBlock_fast_extDict_generic(
 
     {   U32 const curr = (U32)(ip0 - base);
         U32 const maxRep = curr - dictStartIndex;
-        if (offset_2 >= maxRep) offset_2 = 0;
-        if (offset_1 >= maxRep) offset_1 = 0;
+        if (offset_2 >= maxRep) offsetSaved2 = offset_2, offset_2 = 0;
+        if (offset_1 >= maxRep) offsetSaved1 = offset_1, offset_1 = 0;
     }
 
     /* start each op */
@@ -758,9 +861,13 @@ _cleanup:
      * However, it seems to be a meaningful performance hit to try to search
      * them. So let's not. */
 
+    /* If offset_1 started invalid (offsetSaved1 != 0) and became valid (offset_1 != 0),
+     * rotate saved offsets. See comment in ZSTD_compressBlock_fast_noDict for more context. */
+    offsetSaved2 = ((offsetSaved1 != 0) && (offset_1 != 0)) ? offsetSaved1 : offsetSaved2;
+
     /* save reps for next block */
-    rep[0] = offset_1 ? offset_1 : rep[0];
-    rep[1] = offset_2 ? offset_2 : rep[1];
+    rep[0] = offset_1 ? offset_1 : offsetSaved1;
+    rep[1] = offset_2 ? offset_2 : offsetSaved2;
 
     /* Return the last literals size */
     return (size_t)(iend - anchor);
