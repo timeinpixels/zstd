@@ -60,7 +60,7 @@ Our contribution process works in three main stages:
         * Note: run local tests to ensure that your changes didn't break existing functionality
             * Quick check
             ```
-            make shortest
+            make check
             ```
             * Longer check
             ```
@@ -171,8 +171,8 @@ who want earlier signal.
 | Cirrus CI | Used for testing on FreeBSD                                                                                | https://github.com/marketplace/cirrus-ci/                                                                                                              | `.cirrus.yml`          |
 | Circle CI | Historically was used to provide faster signal,<br/> but we may be able to migrate these to Github Actions | https://circleci.com/docs/2.0/getting-started/#setting-up-circleci <br> https://youtu.be/Js3hMUsSZ2c <br> https://circleci.com/docs/2.0/enable-checks/ | `.circleci/config.yml` |
 
-Note: the instructions linked above mostly cover how to set up a repository with CI from scratch. 
-The general idea should be the same for setting up CI on your fork of zstd, but you may have to 
+Note: the instructions linked above mostly cover how to set up a repository with CI from scratch.
+The general idea should be the same for setting up CI on your fork of zstd, but you may have to
 follow slightly different steps. In particular, please ignore any instructions related to setting up
 config files (since zstd already has configs for each of these services).
 
@@ -216,7 +216,7 @@ will typically not be stable enough to obtain reliable benchmark results. If you
 hands on a desktop, this is usually a better scenario.
 
 Of course, benchmarking can be done on non-hyper-stable machines as well. You will just have to
-do a little more work to ensure that you are in fact measuring the changes you've made not and
+do a little more work to ensure that you are in fact measuring the changes you've made and not
 noise. Here are some things you can do to make your benchmarks more stable:
 
 1. The most simple thing you can do to drastically improve the stability of your benchmark is
@@ -373,7 +373,12 @@ counter `L1-dcache-load-misses`
 
 #### Visual Studio
 
-TODO
+Build Zstd with symbols first (for example `cmake -B build -S build/cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo && ninja -C build zstd`) so the profiler resolves call stacks.
+
+* Launch Visual Studio’s Performance Profiler (`Alt+F2`), enable CPU Usage (optionally Instrumentation), and point it at the `programs/zstd` benchmark you want to run.
+* If you prefer to start the benchmark from a terminal, use “Attach to running process” to latch onto it mid-run; keep frame pointers (`-fno-omit-frame-pointer`) for clean stacks.
+* When you stop the capture, review the call tree, hot path, and annotated source panes
+* Microsoft’s [Performance Profiling docs](https://learn.microsoft.com/en-us/visualstudio/profiling/?view=vs-2022) cover deeper sampling, ETW, and collection options if required.
 
 ## Issues
 We use GitHub issues to track public bugs. Please ensure your description is

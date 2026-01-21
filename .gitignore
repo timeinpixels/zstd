@@ -12,6 +12,8 @@
 *.so
 *.so.*
 *.dylib
+*.framework
+*.xcframework
 
 # Executables
 /zstd
@@ -19,14 +21,6 @@ zstdmt
 *.exe
 *.out
 *.app
-
-# Test artefacts
-tmp*
-*.zst
-*.zstd
-dictionary.
-dictionary
-NUL
 
 # Build artefacts
 contrib/linux-kernel/linux/
@@ -36,12 +30,27 @@ bin/
 buck-out/
 build-*
 *.gcda
+cmakebuild/
+cmake-build/
+
+# Test artefacts
+tmp*
+*.zst
+*.zstd
+dictionary.
+dictionary
+NUL
+install/
+
+# IDE
+.clang_complete
+compile_flags.txt
+.clang-format
 
 # Other files
 .directory
 _codelite/
 _zstdbench/
-.clang_complete
 *.idea
 *.swp
 .DS_Store
